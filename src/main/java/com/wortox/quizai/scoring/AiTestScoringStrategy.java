@@ -1,7 +1,11 @@
 package com.wortox.quizai.scoring;
 
+import cn.hutool.core.util.StrUtil;
+import cn.hutool.crypto.digest.DigestUtil;
 import cn.hutool.json.JSONUtil;
 import com.baomidou.mybatisplus.core.toolkit.Wrappers;
+import com.github.benmanes.caffeine.cache.Cache;
+import com.github.benmanes.caffeine.cache.Caffeine;
 import com.wortox.quizai.manager.AiManager;
 import com.wortox.quizai.model.dto.question.QuestionAnswerDTO;
 import com.wortox.quizai.model.dto.question.QuestionContentDTO;
@@ -14,12 +18,10 @@ import com.wortox.quizai.service.QuestionService;
 import javax.annotation.Resource;
 import java.util.ArrayList;
 import java.util.List;
+import java.util.concurrent.TimeUnit;
 
 /**
  * AI 测评类应用评分策略
- *
-
-
  */
 @ScoringStrategyConfig(appType = 1, scoringStrategy = 1)
 public class AiTestScoringStrategy implements ScoringStrategy {
@@ -29,6 +31,19 @@ public class AiTestScoringStrategy implements ScoringStrategy {
 
     @Resource
     private AiManager aiManager;
+
+    /**
+     * AI 评分结果本地缓存
+     */
+    private final Cache<String, String> answerCacheMap =
+            Caffeine.newBuilder().initialCapacity(1024)
+                    // 缓存5分钟移除
+                    .expireAfterAccess(5L, TimeUnit.MINUTES)
+                    .build();
+
+    private String buildCacheKey(Long appId, String choicesStr) {
+        return DigestUtil.md5Hex(appId + ":" + choicesStr);
+    }
 
     /**
      * AI 评分系统消息
@@ -51,6 +66,19 @@ public class AiTestScoringStrategy implements ScoringStrategy {
     @Override
     public UserAnswer doScore(List<String> choices, App app) throws Exception {
         Long appId = app.getId();
+        String jsonStr = JSONUtil.toJsonStr(choices);
+        String cacheKey = buildCacheKey(appId, jsonStr);
+        String answerJson = answerCacheMap.getIfPresent(cacheKey);
+        // 命中缓存则直接返回结果
+        if (StrUtil.isNotBlank(answerJson)) {
+            UserAnswer userAnswer = JSONUtil.toBean(answerJson, UserAnswer.class);
+            userAnswer.setAppId(appId);
+            userAnswer.setAppType(app.getAppType());
+            userAnswer.setScoringStrategy(app.getScoringStrategy());
+            userAnswer.setChoices(jsonStr);
+            return userAnswer;
+        }
+
         // 1. 根据 id 查询到题目
         Question question = questionService.getOne(
                 Wrappers.lambdaQuery(Question.class).eq(Question::getAppId, appId)
@@ -68,6 +96,9 @@ public class AiTestScoringStrategy implements ScoringStrategy {
         int end = result.lastIndexOf("}");
         String json = result.substring(start, end + 1);
 
+        // 缓存结果
+        answerCacheMap.put(cacheKey, json);
+        
         // 3. 构造返回值，填充答案对象的属性
         UserAnswer userAnswer = JSONUtil.toBean(json, UserAnswer.class);
         userAnswer.setAppId(appId);
