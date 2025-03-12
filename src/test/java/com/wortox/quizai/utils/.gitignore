@@ -1,7 +1,9 @@
+## ###
+## ###
 
-sql/
 HELP.md
-target/
+../../../../../../../target/
+sql/
 !.mvn/wrapper/maven-wrapper.jar
 !**/src/main/**/target/
 !**/src/test/**/target/
