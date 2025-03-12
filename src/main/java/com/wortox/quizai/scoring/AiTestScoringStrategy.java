@@ -14,6 +14,8 @@ import com.wortox.quizai.model.entity.Question;
 import com.wortox.quizai.model.entity.UserAnswer;
 import com.wortox.quizai.model.vo.QuestionVO;
 import com.wortox.quizai.service.QuestionService;
+import org.redisson.api.RLock;
+import org.redisson.api.RedissonClient;
 
 import javax.annotation.Resource;
 import java.util.ArrayList;
@@ -31,6 +33,12 @@ public class AiTestScoringStrategy implements ScoringStrategy {
 
     @Resource
     private AiManager aiManager;
+
+    @Resource
+    private RedissonClient redissonClient;
+
+    // 分布式锁的 key
+    private static final String AI_ANSWER_LOCK = "AI_ANSWER_LOCK";
 
     /**
      * AI 评分结果本地缓存
@@ -79,33 +87,47 @@ public class AiTestScoringStrategy implements ScoringStrategy {
             return userAnswer;
         }
 
-        // 1. 根据 id 查询到题目
-        Question question = questionService.getOne(
-                Wrappers.lambdaQuery(Question.class).eq(Question::getAppId, appId)
-        );
-        QuestionVO questionVO = QuestionVO.objToVo(question);
-        List<QuestionContentDTO> questionContent = questionVO.getQuestionContent();
+        RLock lock = redissonClient.getLock(AI_ANSWER_LOCK + cacheKey);
+        try {
+            // 竞争分布式锁，等待 3 秒，15 秒自动释放
+            boolean res = lock.tryLock(3, 15, TimeUnit.SECONDS);
+            if (!res) {
+                return null;
+            }
+            // 1. 根据 id 查询到题目
+            Question question = questionService.getOne(
+                    Wrappers.lambdaQuery(Question.class).eq(Question::getAppId, appId)
+            );
+            QuestionVO questionVO = QuestionVO.objToVo(question);
+            List<QuestionContentDTO> questionContent = questionVO.getQuestionContent();
 
-        // 2. 调用 AI 获取结果
-        // 封装 Prompt
-        String userMessage = getAiTestScoringUserMessage(app, questionContent, choices);
-        // AI 生成
-        String result = aiManager.doSyncStableRequest(AI_TEST_SCORING_SYSTEM_MESSAGE, userMessage);
-        // 截取需要的 JSON 信息
-        int start = result.indexOf("{");
-        int end = result.lastIndexOf("}");
-        String json = result.substring(start, end + 1);
+            // 2. 调用 AI 获取结果
+            // 封装 Prompt
+            String userMessage = getAiTestScoringUserMessage(app, questionContent, choices);
+            // AI 生成
+            String result = aiManager.doSyncStableRequest(AI_TEST_SCORING_SYSTEM_MESSAGE, userMessage);
+            // 截取需要的 JSON 信息
+            int start = result.indexOf("{");
+            int end = result.lastIndexOf("}");
+            String json = result.substring(start, end + 1);
 
-        // 缓存结果
-        answerCacheMap.put(cacheKey, json);
-        
-        // 3. 构造返回值，填充答案对象的属性
-        UserAnswer userAnswer = JSONUtil.toBean(json, UserAnswer.class);
-        userAnswer.setAppId(appId);
-        userAnswer.setAppType(app.getAppType());
-        userAnswer.setScoringStrategy(app.getScoringStrategy());
-        userAnswer.setChoices(JSONUtil.toJsonStr(choices));
-        return userAnswer;
+            // 缓存结果
+            answerCacheMap.put(cacheKey, json);
+
+            // 3. 构造返回值，填充答案对象的属性
+            UserAnswer userAnswer = JSONUtil.toBean(json, UserAnswer.class);
+            userAnswer.setAppId(appId);
+            userAnswer.setAppType(app.getAppType());
+            userAnswer.setScoringStrategy(app.getScoringStrategy());
+            userAnswer.setChoices(JSONUtil.toJsonStr(choices));
+            return userAnswer;
+        } finally {
+            if (lock != null && lock.isLocked()) {
+                if (lock.isHeldByCurrentThread()) {
+                    lock.unlock();
+                }
+            }
+        }
     }
 
     /**
