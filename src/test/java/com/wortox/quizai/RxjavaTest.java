@@ -1,6 +1,5 @@
 package com.wortox.quizai;
 
-
 import io.reactivex.rxjava3.core.Flowable;
 import io.reactivex.rxjava3.schedulers.Schedulers;
 import org.junit.jupiter.api.Test;
