@@ -105,3 +105,14 @@ knife4j:
 # AI 配置
 ai:
   apiKey: fec5be11c9fc44779e3c97a44d00f895.4YhRNJVh4lHnBIqI
+
+# 配置中心
+nacos:
+  config:
+    server-addr: 127.0.0.1:8848  # nacos 地址
+    bootstrap:
+      enable: true  # 预加载
+    data-id: blacklist # 控制台填写的 Data ID
+    group: DEFAULT_GROUP # 控制台填写的 group
+    type: yaml  # 选择的文件格式
+    auto-refresh: true # 开启自动刷新
